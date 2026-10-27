@@ -308,8 +308,12 @@ public class DailySummaryTask {
             if (icuAdmissionDate != null) {
                 LocalDateTime admissionTime = icuAdmissionDate.toInstant()
                         .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
-                LocalDate admissionDate = admissionTime.toLocalDate();
-                if (reportDate.equals(admissionDate)) {
+                // 入科第一天判定：入科时间落在本窗口内 [windowStart, windowEnd)
+                // 不能用 reportDate.equals(入科日期)：窗口是 [D 07:00, D+1 07:00)，
+                // 00:00~07:00 入科的患者数据属于 reportDate=入科日-1 的窗口，
+                // 用日期相等会错位一天（次日那轮误算 hours，如 03:30 入科算出 28 小时）
+                if (!admissionTime.isBefore(window.getStart())
+                        && admissionTime.isBefore(window.getEnd())) {
                     long minutes = java.time.Duration.between(admissionTime, window.getEnd()).toMinutes();
                     // 1小时29分算1小时、1小时30分算2小时（满30分钟进1小时）
                     admissionHoursToSeven = (int) ((minutes + 30) / 60);

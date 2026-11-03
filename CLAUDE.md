@@ -383,6 +383,7 @@ spring.datasource.kingbase.password: 密码
 | `/queue/stats` | GET | 队列状态统计（PENDING/SENDING/SUCCESS/RETRY/DEAD） |
 | `/scan/patient` | POST | 手动触发指定患者数据扫描（含入科时间点、出入量） |
 | `/manual/scanAndPush` | POST | 批量扫描在科患者并立即推送（用于数据修正） |
+| `/manual/heightWeight` | POST | 手动指定日期回传身高体重（按传入日期做7天周期判定，满足才回传） |
 
 ### /scan/patient 参数
 | 参数 | 类型 | 必填 | 说明 |
@@ -410,6 +411,24 @@ curl -X POST "http://localhost:10245/manual/scanAndPush?targetDate=2026-08-23&ho
 
 # 重新扫描今天全部6个时间点并立即推送
 curl -X POST "http://localhost:10245/manual/scanAndPush?targetDate=2026-08-23"
+```
+
+### /manual/heightWeight 参数
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| mrn | String | 是 | 住院号（patient.mrn 或 hisPid） |
+| targetDate | LocalDate | 是 | 目标日期（yyyy-MM-dd），判定基准，planTime=当天07:00 |
+
+判定规则（与自动任务一致，但基准是传入日期而非今天）：
+- `pageDayIndex = DAYS.between(admission_ward_time日期, targetDate)`
+- 满足 `pageDayIndex > 0 且 pageDayIndex % 7 == 0` 才回传，否则只返回原因
+- 不允许 targetDate 晚于今天
+- 满足时走 buildPeriodic 构建（非数值替换"卧床"），入队后立即 pushOnce
+
+使用示例：
+```bash
+# 补发 2026-11-01（入科基准 2026-09-20 的第 42 天，满足）的身高体重
+curl -X POST "http://localhost:10245/manual/heightWeight?mrn=0126091954&targetDate=2026-11-01"
 ```
 
 ## 文件结构
@@ -1232,3 +1251,90 @@ if (dischargedType != null
 **边界情况**：
 - `dischargedType` 为空但 status=discharged 的患者：按新规则不拦截（判断依据只看 dischargedType）
 - 无 icuDischargeTime 的出院/死亡患者：无法比较时间，不拦截（保持原行为）
+
+---
+
+### 2026-11-03：修复身高体重评估单选错导致身高体重不回传
+
+**问题描述**：
+患者 0126091954 的转入护理评估单有身高体重（sg=175, tz=65），但 vitalsign_push_queue 中无任何 1013/1014 记录。
+
+**根因分析**：
+1. `HeightWeightHandler.findFormData` 按 `createTime` 倒序取一张表单，但 dFormData 没有 createTime 字段（全库 630 条均无），排序失效，实际按自然顺序返回第一条
+2. 命中的是入院护理评估单（无 sg/tz），真正有数据的转入护理评估单被忽略
+3. 入科首条与 7 天周期两条路径共用 findFormData，均被堵死
+
+**影响面**：
+158 个患者同时有入院+转入评估单，约 52 个因此漏回传身高体重。
+
+**修改文件**：
+1. `HeightWeightHandler.java`
+2. `HeightWeightHandlerTest.java`（新增单元测试）
+
+**修改内容**：
+```java
+// findFormData 改为 findForms：按 _id 倒序返回全部候选表单（dFormData 无 createTime，排序失效）
+private List<Document> findForms(String pid, String traceId) {
+    Query query = new Query(Criteria.where("pid").is(pid)
+            .and("formCode").in(FORM_CODES))
+            .with(Sort.by(Sort.Direction.DESC, "_id"));
+    return mongoTemplate.find(query, Document.class, "dFormData");
+}
+
+// 新增合并提取：按字段优先级逐级查找，每级跨全部表单搜索（新表单优先）
+// 字段可分散在不同表单（如身高在转入单、体重在入院单）
+String extractFieldFromForms(List<Document> forms, List<String> fields)
+
+// 字段优先级补全 fg/zt 兜底（对齐文档：身高 sg, fg；体重 tz, zt）
+HEIGHT("身高", "1013", "cm", Arrays.asList("sg", "fg"), ...)
+WEIGHT("体重", "1014", "kg", Arrays.asList("tz", "zt"), ...)
+```
+
+**行为变化**：
+- 修改前：只从按 createTime 排序（实际失效）选出的单张表单提取 sg/tz，选错表单则身高体重整条不回传
+- 修改后：跨全部入院/转入评估单合并提取，优先级 sg > fg、tz > zt，同字段新表单优先
+- 入科首条（buildAdmissionFirst）与 7 天周期回传（buildPeriodic）均受益
+
+**验收标准**：
+1. `mvn test` 全部通过（含新增 HeightWeightHandlerTest 6 个用例）
+2. 只修改身高体重取数逻辑，其他体征、出入量、时间窗口、推送状态机不受影响
+
+---
+
+### 2026-11-03：新增手动指定日期回传身高体重接口 /manual/heightWeight
+
+**需求**：
+身高体重 7 天周期判定锚定"今天"（`resolveHeightWeightSendTime` 用 now 计算 pageDayIndex），
+历史周期点（如 2026-11-01 第 42 天）错过当天后无法通过接口补发。
+需要一个手动接口：传入日期，按周期规则判定是否满足回传，满足就回传，不满足就不回传。
+
+**实现方案**：
+1. `ClinicalTimeWindowService` 新增 `resolveHeightWeightSendTimeAtDate(admissionWardTime, targetDate)`：
+   判定规则与 `resolveHeightWeightSendTime` 完全一致（pageDayIndex > 0 且 % 7 == 0），
+   仅基准从"今天"换成传入的 targetDate；满足时 sendTime = targetDate 当天 07:00
+2. `Controller` 新增 `POST /manual/heightWeight`：
+   - 参数：mrn、targetDate
+   - 流程：查患者 → 查 KingBase admission_ward_time → 按 targetDate 判定 →
+     满足则 buildPeriodic 构建 + upsertPending 入队 + pushTask.pushOnce 立即推送；
+     不满足只返回判定结果（含 pageDayIndex）
+   - 约束：targetDate 不得晚于今天；未获取到 admission_ward_time 不回传
+
+**修改文件**：
+1. `ClinicalTimeWindowService.java`：新增 resolveHeightWeightSendTimeAtDate
+2. `Controller.java`：新增 /manual/heightWeight 接口
+3. `ClinicalTimeWindowServiceTest.java`（新增单元测试，5 个用例）
+
+**使用示例**：
+```bash
+# 补发 2026-11-01（入科基准 2026-09-20 的第 42 天）的身高体重
+curl -X POST "http://localhost:10245/manual/heightWeight?mrn=0126091954&targetDate=2026-11-01"
+```
+
+**影响范围**：
+- 仅新增接口与新增服务方法，自动任务路径（resolveHeightWeightSendTime）行为不变
+
+**验收标准**：
+1. `mvn test` 全部通过（含新增 ClinicalTimeWindowServiceTest 5 个用例）
+2. 传入满足周期的日期（如第 42 天）→ 回传 planTime=当天 07:00 并立即推送
+3. 传入不满足的日期（如第 44 天）→ 不回传，返回 pageDayIndex 与原因
+4. 自动任务、其他体征、出入量、推送状态机不受影响

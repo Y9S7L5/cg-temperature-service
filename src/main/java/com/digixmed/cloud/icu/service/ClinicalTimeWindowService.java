@@ -341,4 +341,38 @@ public class ClinicalTimeWindowService {
                 pageDayIndex, sendTime, admissionBaseDate, todayDate);
         return Optional.of(sendTime);
     }
+
+    /**
+     * 指定日期判定版：以传入日期为基准判断是否为身高体重发送日（供手动接口补发使用）
+     *
+     * 判定规则与 resolveHeightWeightSendTime 完全一致，
+     * 仅将基准从"今天"换成传入的 targetDate：
+     *   pageDayIndex = 入科基准日期到 targetDate 的天数
+     *   满足 pageDayIndex > 0 且 pageDayIndex % heightWeightPageDays == 0 才发送，
+     *   发送时间 = targetDate 当天 heightWeightSendHour 点。
+     *
+     * @param admissionWardTime admission_ward_time（入科基准）
+     * @param targetDate        目标日期（判定基准，非当前时间）
+     * @return 发送时间（仅在应该发送时返回）
+     */
+    public Optional<LocalDateTime> resolveHeightWeightSendTimeAtDate(LocalDateTime admissionWardTime,
+                                                                     LocalDate targetDate) {
+        if (admissionWardTime == null || targetDate == null) {
+            return Optional.empty();
+        }
+
+        LocalDate admissionBaseDate = admissionWardTime.toLocalDate();
+        long pageDayIndex = ChronoUnit.DAYS.between(admissionBaseDate, targetDate);
+
+        if (pageDayIndex <= 0 || pageDayIndex % heightWeightPageDays != 0) {
+            log.info("身高体重不发送(指定日期): pageDayIndex={} pageDays={} admission={} targetDate={}",
+                    pageDayIndex, heightWeightPageDays, admissionBaseDate, targetDate);
+            return Optional.empty();
+        }
+
+        LocalDateTime sendTime = LocalDateTime.of(targetDate, LocalTime.of(heightWeightSendHour, 0, 0));
+        log.info("身高体重计划发送(指定日期): pageDayIndex={} sendTime={} admission={} targetDate={}",
+                pageDayIndex, sendTime, admissionBaseDate, targetDate);
+        return Optional.of(sendTime);
+    }
 }

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -221,5 +222,47 @@ class ClinicalTimeWindowServiceTest {
         assertNotNull(window);
         assertTrue(window.contains(admissionTime),
                 "窗口 [" + window.getStart() + ", " + window.getEnd() + ") 应包含入科时刻 " + admissionTime);
+    }
+
+    // ==================== 指定日期身高体重发送日判定 ====================
+
+    @Test
+    void testResolveHeightWeightSendTimeAtDate_satisfied() {
+        // 入科基准 2026-09-20，目标 2026-11-01 为第 42 天（42 % 7 == 0）→ 发送
+        Optional<LocalDateTime> result = service.resolveHeightWeightSendTimeAtDate(
+                LocalDateTime.of(2026, 9, 20, 8, 34, 36), LocalDate.of(2026, 11, 1));
+        assertTrue(result.isPresent());
+        assertEquals(LocalDateTime.of(2026, 11, 1, 7, 0), result.get());
+    }
+
+    @Test
+    void testResolveHeightWeightSendTimeAtDate_nonSendDayRejected() {
+        // 目标 2026-11-03 为第 44 天（44 % 7 != 0）→ 不发送
+        Optional<LocalDateTime> result = service.resolveHeightWeightSendTimeAtDate(
+                LocalDateTime.of(2026, 9, 20, 8, 34, 36), LocalDate.of(2026, 11, 3));
+        assertFalse(result.isPresent());
+    }
+
+    @Test
+    void testResolveHeightWeightSendTimeAtDate_admissionDayRejected() {
+        // pageDayIndex = 0 不满足周期判定（入科当天走入科首条路径）
+        Optional<LocalDateTime> result = service.resolveHeightWeightSendTimeAtDate(
+                LocalDateTime.of(2026, 9, 20, 8, 34, 36), LocalDate.of(2026, 9, 20));
+        assertFalse(result.isPresent());
+    }
+
+    @Test
+    void testResolveHeightWeightSendTimeAtDate_beforeAdmissionDayRejected() {
+        // 目标日期早于入科基准（pageDayIndex < 0）
+        Optional<LocalDateTime> result = service.resolveHeightWeightSendTimeAtDate(
+                LocalDateTime.of(2026, 9, 20, 8, 34, 36), LocalDate.of(2026, 9, 19));
+        assertFalse(result.isPresent());
+    }
+
+    @Test
+    void testResolveHeightWeightSendTimeAtDate_nullArgsRejected() {
+        assertFalse(service.resolveHeightWeightSendTimeAtDate(null, LocalDate.of(2026, 11, 1)).isPresent());
+        assertFalse(service.resolveHeightWeightSendTimeAtDate(
+                LocalDateTime.of(2026, 9, 20, 8, 34, 36), null).isPresent());
     }
 }

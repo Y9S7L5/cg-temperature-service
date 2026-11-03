@@ -523,6 +523,132 @@ public class Controller {
     }
 
     /**
+     * 手动指定日期回传身高体重
+     *
+     * 以传入日期为基准做 7 天周期判定（规则与自动任务一致，但基准是传入日期而非今天）：
+     *   pageDayIndex = 入科基准日期(admission_ward_time)到 targetDate 的天数
+     *   满足 pageDayIndex > 0 且 % 7 == 0 才回传，planTime = targetDate 当天 07:00
+     * 满足则构建身高体重入队并立即推送，不满足则只返回判定结果。
+     *
+     * @param mrn        住院号（patient.mrn 或 hisPid）
+     * @param targetDate 目标日期（判定基准）
+     * @return 判定与回传结果
+     */
+    @PostMapping("/manual/heightWeight")
+    @ApiOperation(value = "手动指定日期回传身高体重", notes = "按传入日期做7天周期判定，满足则回传并立即推送，不满足只返回原因")
+    public Map<String, Object> manualHeightWeight(
+            @ApiParam(value = "住院号", required = true, example = "0126091954")
+            @RequestParam String mrn,
+            @ApiParam(value = "目标日期（判定基准）", required = true, example = "2026-11-01")
+            @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate targetDate) {
+
+        String traceId = TraceIdGenerator.generate();
+        log.info("MANUAL_HW traceId={} mrn={} targetDate={}", traceId, mrn, targetDate);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("traceId", traceId);
+        result.put("mrn", mrn);
+        result.put("targetDate", targetDate.toString());
+
+        // 1. 查找患者
+        Query patientQuery = new Query(new Criteria().orOperator(
+                Criteria.where("mrn").is(mrn),
+                Criteria.where("hisPid").is(mrn)
+        ));
+        Document patient = mongoTemplate.findOne(patientQuery, Document.class, "patient");
+        if (patient == null) {
+            result.put("satisfied", false);
+            result.put("message", "未找到患者，mrn=" + mrn);
+            return result;
+        }
+        String pid = patient.get("_id").toString();
+        result.put("pid", pid);
+
+        // 2. 禁止回传未来日期
+        if (targetDate.isAfter(timeWindowService.today())) {
+            result.put("satisfied", false);
+            result.put("message", "目标日期不能晚于今天，不回传");
+            return result;
+        }
+
+        // 3. 查 KingBase 入科基准
+        String hisPatientId = patient.getString("mrn");
+        InpatientDTO inpatient = null;
+        try {
+            inpatient = inpatientRepository.findByPatientId(hisPatientId);
+        } catch (Exception e) {
+            log.warn("MANUAL_HW traceId={} 查入科时间失败: {}", traceId, e.getMessage());
+        }
+        if (inpatient == null || inpatient.getAdmissionWardTime() == null) {
+            result.put("satisfied", false);
+            result.put("message", "未获取到admission_ward_time，无法判定，不回传");
+            return result;
+        }
+        LocalDateTime admissionWardTime = inpatient.getAdmissionWardTime();
+        result.put("admissionWardTime", admissionWardTime.toString());
+
+        // 4. 按传入日期做周期判定（规则同自动任务，基准为 targetDate）
+        long pageDayIndex = java.time.temporal.ChronoUnit.DAYS.between(
+                admissionWardTime.toLocalDate(), targetDate);
+        result.put("pageDayIndex", pageDayIndex);
+
+        java.util.Optional<LocalDateTime> sendTimeOpt =
+                timeWindowService.resolveHeightWeightSendTimeAtDate(admissionWardTime, targetDate);
+        if (!sendTimeOpt.isPresent()) {
+            result.put("satisfied", false);
+            result.put("message", "不满足回传条件: pageDayIndex=" + pageDayIndex + " 需>0且%7==0，不回传");
+            return result;
+        }
+
+        LocalDateTime sendTime = sendTimeOpt.get();
+        result.put("satisfied", true);
+        result.put("sendTime", sendTime.toString());
+
+        // 5. 构建并入队
+        List<String> items = new ArrayList<>();
+        int inserted = 0;
+        int skipped = 0;
+        int failed = 0;
+        try {
+            List<VitalSignPayload> hwPayloads = heightWeightHandler.buildPeriodic(
+                    pid, admissionWardTime, sendTime, traceId);
+            if (hwPayloads.isEmpty()) {
+                result.put("message", "候选评估单无身高体重字段或值为空，未回传");
+            }
+            for (VitalSignPayload hwPayload : hwPayloads) {
+                String action = (String) intermediateService.upsertPending(hwPayload, traceId).get("action");
+                if ("INSERT".equals(action)) inserted++;
+                else if ("SKIP".equals(action)) skipped++;
+                items.add(hwPayload.getVitalsignName() + ":" + action);
+                log.info("MANUAL_HW traceId={} {}处理完成 action={}", traceId, hwPayload.getVitalsignName(), action);
+            }
+        } catch (Exception e) {
+            failed++;
+            log.error("MANUAL_HW traceId={} 身高体重处理异常", traceId, e);
+            result.put("message", "处理异常: " + e.getMessage());
+        }
+        result.put("inserted", inserted);
+        result.put("skipped", skipped);
+        result.put("failed", failed);
+        result.put("items", items);
+
+        // 6. 立即推送（有实际入队/命中记录才推）
+        if (!items.isEmpty()) {
+            log.info("MANUAL_HW traceId={} 开始立即推送...", traceId);
+            try {
+                pushTask.pushOnce(traceId);
+                log.info("MANUAL_HW traceId={} 推送完成", traceId);
+                result.put("pushStatus", "completed");
+            } catch (Exception e) {
+                log.error("MANUAL_HW traceId={} 推送异常", traceId, e);
+                result.put("pushStatus", "error: " + e.getMessage());
+            }
+        }
+
+        return result;
+    }
+
+    /**
      * 调试版：处理单个时间点的所有普通体征（带详细日志）
      */
     private Map<String, Object> processTimePointDebug(String pid, Document patient,

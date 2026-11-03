@@ -43,7 +43,7 @@ import java.util.function.BiConsumer;
  * 入科日期基准：以 KingBase inpatients.admission_ward_time 为唯一基准，
  *   不再以 icuAdmissionTime 同天判断替代。
  *
- * 字段优先级：身高 sg；体重 tz
+ * 字段优先级：身高 sg, fg；体重 tz, zt
  */
 @Component
 public class HeightWeightHandler extends BaseVitalSignHandler {
@@ -56,9 +56,9 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
      * R1: 身高(1013) 和 体重(1014) 值均放 vitalsignSVal1
      */
     private enum Metric {
-        HEIGHT("身高", "1013", "cm", Collections.singletonList("sg"),
+        HEIGHT("身高", "1013", "cm", Arrays.asList("sg", "fg"),
                 VitalSignPayload::setVitalsignSVal1),
-        WEIGHT("体重", "1014", "kg", Collections.singletonList("tz"),
+        WEIGHT("体重", "1014", "kg", Arrays.asList("tz", "zt"),
                 VitalSignPayload::setVitalsignSVal1);
 
         private final String name;
@@ -118,15 +118,15 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             return Collections.emptyList();
         }
 
-        Document formData = findFormData(pid, traceId);
-        if (formData == null) {
+        List<Document> forms = findForms(pid, traceId);
+        if (forms.isEmpty()) {
             log.warn("ADMISSION_HW traceId={} pid={} 未找到入院/转入护理评估单，身高体重不回传", traceId, pid);
             return Collections.emptyList();
         }
 
         // 入科第一条：planTime=recordTime=icuAdmissionTime（使用入科时间本身）
         LocalDateTime sendTime = admissionDateTime;
-        return buildPair(patient, pid, formData, timeNormalizer -> {
+        return buildPair(patient, pid, forms, timeNormalizer -> {
             return sendTime;
         }, traceId, sendTime, false);
     }
@@ -152,13 +152,13 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             return Collections.emptyList();
         }
 
-        Document formData = findFormData(pid, traceId);
-        if (formData == null) {
+        List<Document> forms = findForms(pid, traceId);
+        if (forms.isEmpty()) {
             log.warn("PERIODIC_HW traceId={} pid={} 未找到入院/转入护理评估单，身高体重不回传", traceId, pid);
             return Collections.emptyList();
         }
 
-        return buildPair(patient, pid, formData, timeNormalizer -> {
+        return buildPair(patient, pid, forms, timeNormalizer -> {
             // 周期模式：用 PayloadTimeNormalizer 归一化到 sendTime
             return sendTime;
         }, traceId, sendTime, true);
@@ -203,22 +203,22 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     // ======================== 内部方法 ========================
 
     /**
-     * 共享构建逻辑：查 dFormData 一次，构建身高和体重两条 payload
+     * 共享构建逻辑：从候选评估单合并提取字段，构建身高和体重两条 payload
      *
      * @param isPeriodic 是否为周期性回传（true=周期回传，false=入科第一条）
      *                   周期性回传时，如果值为非数值类型，替换为"卧床"
      */
-    private List<VitalSignPayload> buildPair(Document patient, String pid, Document formData,
+    private List<VitalSignPayload> buildPair(Document patient, String pid, List<Document> forms,
                                               java.util.function.Function<Void, LocalDateTime> timeResolver,
                                               String traceId,
                                               LocalDateTime anchorTime, boolean isPeriodic) {
         List<VitalSignPayload> result = new java.util.ArrayList<>();
 
         for (Metric metric : Metric.values()) {
-            String value = extractFieldFromFormData(formData, metric.sourceFields);
+            String value = extractFieldFromForms(forms, metric.sourceFields);
             if (value == null) {
-                log.warn("HW_VALUE traceId={} pid={} 评估单无{}字段或值为空 formCode={}",
-                        traceId, pid, metric.sourceFields, formData.getString("formCode"));
+                log.warn("HW_VALUE traceId={} pid={} 候选评估单无{}字段或值为空",
+                        traceId, pid, metric.sourceFields);
                 continue;
             }
 
@@ -404,16 +404,46 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
         return id != null ? id.toString() : null;
     }
 
-    private Document findFormData(String pid, String traceId) {
+    /**
+     * 查询候选评估单（入院/转入护理评估单），按 _id 倒序返回
+     *
+     * dFormData 无 createTime 字段，按 createTime 排序会失效导致取到任意一张单；
+     * 改用 _id 倒序（_id 含时间戳，近似插入时间倒序）。
+     * 身高体重字段可能分散在多张表单中，返回全部候选单供合并提取。
+     */
+    private List<Document> findForms(String pid, String traceId) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("formCode").in(FORM_CODES))
-                .with(Sort.by(Sort.Direction.DESC, "createTime"))
-                .limit(1);
-        return mongoTemplate.findOne(query, Document.class, "dFormData");
+                .with(Sort.by(Sort.Direction.DESC, "_id"));
+        return mongoTemplate.find(query, Document.class, "dFormData");
     }
 
+    /**
+     * 从候选评估单合并提取字段值
+     *
+     * 按 fields 优先级逐级查找，每级字段跨全部表单搜索（新表单优先），
+     * 返回第一个非空值。字段可分散在不同表单（如身高在转入单、体重在入院单）。
+     */
+    String extractFieldFromForms(List<Document> forms, List<String> fields) {
+        if (forms == null || forms.isEmpty()) {
+            return null;
+        }
+        for (String field : fields) {
+            for (Document formData : forms) {
+                String value = extractFieldFromFormData(formData, field);
+                if (value != null) {
+                    return value;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从单张表单的 fieldDataList 中提取指定字段的非空值
+     */
     @SuppressWarnings("unchecked")
-    private String extractFieldFromFormData(Document formData, List<String> fields) {
+    private String extractFieldFromFormData(Document formData, String field) {
         if (formData == null) {
             return null;
         }
@@ -427,15 +457,14 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
 
         List<Document> fieldDataList = (List<Document>) fieldDataListObj;
 
-        for (String field : fields) {
-            for (Document fieldData : fieldDataList) {
-                String fieldName = fieldData.getString("field");
-                if (field.equals(fieldName)) {
-                    String value = fieldData.getString("value");
-                    if (value != null && !value.trim().isEmpty()) {
-                        log.info("从fieldDataList提取字段 field={} value={}", field, value);
-                        return value.trim();
-                    }
+        for (Document fieldData : fieldDataList) {
+            String fieldName = fieldData.getString("field");
+            if (field.equals(fieldName)) {
+                String value = fieldData.getString("value");
+                if (value != null && !value.trim().isEmpty()) {
+                    log.info("从fieldDataList提取字段 formCode={} field={} value={}",
+                            formData.getString("formCode"), field, value);
+                    return value.trim();
                 }
             }
         }

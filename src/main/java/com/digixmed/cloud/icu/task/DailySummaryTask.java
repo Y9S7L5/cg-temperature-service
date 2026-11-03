@@ -694,6 +694,27 @@ public class DailySummaryTask {
     }
 
     /**
+     * 判断记录是否为人工填写的有效值
+     * strVal 或 fVal 任一有内容即视为已填写，手工填写的 "0" 也算有效值
+     * 两者都为空视为未填写（数据为空，不回传）
+     */
+    private boolean hasManualValue(Document doc) {
+        String strVal = getValueFromDocByKey(doc, "strVal", String.class);
+        if (strVal != null && !strVal.trim().isEmpty()) {
+            return true;
+        }
+        Object fValObj = doc.get("fVal");
+        if (fValObj instanceof Number) {
+            return true;
+        }
+        if (fValObj instanceof String) {
+            String fValStr = ((String) fValObj).trim();
+            return !fValStr.isEmpty();
+        }
+        return false;
+    }
+
+    /**
      * 处理小便量
      * 无记录时回传 0
      */
@@ -774,21 +795,25 @@ public class DailySummaryTask {
 
     /**
      * 处理排出物量
-     * 无记录时不回传
+     * 无有效填写记录时不回传；手工填写的 0 要回传
      */
     private void processDrainageOutput(List<Document> records, Document patient, String pid,
                                         ClinicalTimeWindow window, String traceId, int hours) {
         List<String> drainageCodes = DrainageOutputHandler.getDrainageCodes();
         BigDecimal total = BigDecimal.ZERO;
+        boolean hasValue = false;
         for (Document doc : records) {
             String code = getValueFromDocByKey(doc, "code", String.class);
             if (code != null && drainageCodes.contains(code)) {
                 total = total.add(parseAmountOrZero(doc, traceId));
+                if (hasManualValue(doc)) {
+                    hasValue = true;
+                }
             }
         }
 
-        if (total.compareTo(BigDecimal.ZERO) == 0) {
-            log.info("DRAINAGE_OUTPUT_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+        if (!hasValue) {
+            log.info("DRAINAGE_OUTPUT_SKIP traceId={} pid={} 无有效记录，跳过回传", traceId, pid);
             return;
         }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
@@ -797,19 +822,23 @@ public class DailySummaryTask {
 
     /**
      * 处理胃管负压引流
-     * 无记录时不回传
+     * 无有效填写记录时不回传；手工填写的 0 要回传
      */
     private void processGastricDrainage(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId, int hours) {
         BigDecimal total = BigDecimal.ZERO;
+        boolean hasValue = false;
         for (Document doc : records) {
             if ("param_tube_胃肠减压".equals(getValueFromDocByKey(doc, "code", String.class))) {
                 total = total.add(parseAmountOrZero(doc, traceId));
+                if (hasManualValue(doc)) {
+                    hasValue = true;
+                }
             }
         }
 
-        if (total.compareTo(BigDecimal.ZERO) == 0) {
-            log.info("GASTRIC_DRAINAGE_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+        if (!hasValue) {
+            log.info("GASTRIC_DRAINAGE_SKIP traceId={} pid={} 无有效记录，跳过回传", traceId, pid);
             return;
         }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
@@ -818,20 +847,24 @@ public class DailySummaryTask {
 
     /**
      * 处理其他引流量
-     * 无记录时不回传
+     * 无有效填写记录时不回传；手工填写的 0 要回传
      */
     private void processOtherDrainage(List<Document> records, Document patient, String pid,
                                        ClinicalTimeWindow window, String traceId, int hours) {
         BigDecimal total = BigDecimal.ZERO;
+        boolean hasValue = false;
         for (Document doc : records) {
             String code = getValueFromDocByKey(doc, "code", String.class);
             if (code != null && code.contains("_tube_") && !"param_tube_胃肠减压".equals(code)) {
                 total = total.add(parseAmountOrZero(doc, traceId));
+                if (hasManualValue(doc)) {
+                    hasValue = true;
+                }
             }
         }
 
-        if (total.compareTo(BigDecimal.ZERO) == 0) {
-            log.info("OTHER_DRAINAGE_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+        if (!hasValue) {
+            log.info("OTHER_DRAINAGE_SKIP traceId={} pid={} 无有效记录，跳过回传", traceId, pid);
             return;
         }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
@@ -840,19 +873,23 @@ public class DailySummaryTask {
 
     /**
      * 处理净超滤量
-     * 无记录时不回传
+     * 无有效填写记录时不回传；手工填写的 0 要回传
      */
     private void processNetUltrafiltration(List<Document> records, Document patient, String pid,
                                             ClinicalTimeWindow window, String traceId, int hours) {
         BigDecimal total = BigDecimal.ZERO;
+        boolean hasValue = false;
         for (Document doc : records) {
             if ("param_chaoLvLiang".equals(getValueFromDocByKey(doc, "code", String.class))) {
                 total = total.add(parseAmountOrZero(doc, traceId));
+                if (hasManualValue(doc)) {
+                    hasValue = true;
+                }
             }
         }
 
-        if (total.compareTo(BigDecimal.ZERO) == 0) {
-            log.info("NET_ULTRAFILTRATION_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+        if (!hasValue) {
+            log.info("NET_ULTRAFILTRATION_SKIP traceId={} pid={} 无有效记录，跳过回传", traceId, pid);
             return;
         }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);

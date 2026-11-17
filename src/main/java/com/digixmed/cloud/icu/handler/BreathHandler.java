@@ -36,25 +36,25 @@ import java.util.Set;
  *
  *   A. NOT_USING → USING（启用呼吸机）：
  *      - 前一时间点无呼吸机标识，当前时间点有
- *      - vitalsignSVal1 = "使用呼吸机"
+ *      - vitalsignSVal2 = "使用呼吸机"
  *      - vitalsignNVal1 = 空
  *
  *   B. USING → NOT_USING（停止呼吸机）：
  *      - 前一时间点有呼吸机标识，当前时间点没有
- *      - vitalsignSVal1 = "停止呼吸机"
+ *      - vitalsignSVal2 = "停止呼吸机"
  *      - vitalsignNVal1 = 空
  *
  *   C. USING → USING（持续使用呼吸机）：
  *      - 前后时间点都有呼吸机标识（数据没变）
  *      - 发呼吸具体值
  *      - vitalsignNVal1 = 呼吸值
- *      - vitalsignSVal1 = 空
+ *      - vitalsignSVal1 = 空, vitalsignSVal2 = 空
  *
  *   D. NOT_USING → NOT_USING（普通呼吸）：
  *      - 前后时间点都没有呼吸机标识
  *      - 发呼吸具体值
  *      - vitalsignNVal1 = 呼吸值
- *      - vitalsignSVal1 = 空
+ *      - vitalsignSVal1 = 空, vitalsignSVal2 = 空
  */
 @Component
 public class BreathHandler extends BaseVitalSignHandler {
@@ -115,7 +115,8 @@ public class BreathHandler extends BaseVitalSignHandler {
                         .vitalsignName("呼吸")
                         .vitalsignType("1004")
                         .vitalsignNVal1("")
-                        .vitalsignSVal1(VentilatorState.USING.getDisplayName())
+                        .vitalsignSVal1("")
+                        .vitalsignSVal2(VentilatorState.USING.getDisplayName())
                         .unit("")
                         .build();
                 log.info("STEP_04 traceId={} pid={} 呼吸机状态变化后重新启用 hasChangeBetween=true", traceId, pid);
@@ -125,7 +126,8 @@ public class BreathHandler extends BaseVitalSignHandler {
                         .vitalsignName("呼吸")
                         .vitalsignType("1004")
                         .vitalsignNVal1("")
-                        .vitalsignSVal1(VentilatorState.STOPPED.getDisplayName())
+                        .vitalsignSVal1("")
+                        .vitalsignSVal2(VentilatorState.STOPPED.getDisplayName())
                         .unit("")
                         .build();
                 log.info("STEP_04 traceId={} pid={} 呼吸机状态变化后停止 hasChangeBetween=true", traceId, pid);
@@ -136,7 +138,8 @@ public class BreathHandler extends BaseVitalSignHandler {
                     .vitalsignName("呼吸")
                     .vitalsignType("1004")
                     .vitalsignNVal1("")
-                    .vitalsignSVal1(VentilatorState.USING.getDisplayName())
+                    .vitalsignSVal1("")
+                    .vitalsignSVal2(VentilatorState.USING.getDisplayName())
                     .unit("")
                     .build();
             log.info("STEP_04 traceId={} pid={} 呼吸机启用事件 NOT_USING->USING", traceId, pid);
@@ -146,7 +149,8 @@ public class BreathHandler extends BaseVitalSignHandler {
                     .vitalsignName("呼吸")
                     .vitalsignType("1004")
                     .vitalsignNVal1("")
-                    .vitalsignSVal1(VentilatorState.STOPPED.getDisplayName())
+                    .vitalsignSVal1("")
+                    .vitalsignSVal2(VentilatorState.STOPPED.getDisplayName())
                     .unit("")
                     .build();
             log.info("STEP_04 traceId={} pid={} 呼吸机停止事件 USING->NOT_USING", traceId, pid);
@@ -163,6 +167,7 @@ public class BreathHandler extends BaseVitalSignHandler {
                     .vitalsignType("1004")
                     .vitalsignNVal1(breathValue != null ? formatDouble(breathValue) : "")
                     .vitalsignSVal1("")
+                    .vitalsignSVal2("")
                     .unit("次/分")
                     .build();
             log.info("STEP_04 traceId={} pid={} 持续使用呼吸机 发呼吸值", traceId, pid);
@@ -179,6 +184,7 @@ public class BreathHandler extends BaseVitalSignHandler {
                     .vitalsignType("1004")
                     .vitalsignNVal1(breathValue != null ? formatDouble(breathValue) : "")
                     .vitalsignSVal1("")
+                    .vitalsignSVal2("")
                     .unit("次/分")
                     .build();
         }

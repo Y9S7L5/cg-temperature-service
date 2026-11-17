@@ -136,7 +136,7 @@ FAILED → 推送中 → SUCCESS
 `[前一天07:00, 当天07:00)` — 7-8点每5分钟执行，8点之后每30分钟执行
 
 ### 体温复测窗口
-`(标准时间点, 标准时间点+1小时)` — 体温>=39.0℃触发
+`(标准时间点, 标准时间点+1小时]` — 体温>=39.0℃触发
 
 ## 扫描逻辑
 
@@ -197,7 +197,7 @@ FAILED → 推送中 → SUCCESS
 1. TemperatureHandler 采集时体温>=39.0℃ → 设置 `recheckRequired=true, recheckCompleted=false`
 2. 记录写入 `vitalsign_push_queue`，vitalsignNVal2 为空
 3. TemperatureRecheckTask（每10分钟扫描）查询 `recheckRequired=true AND recheckCompleted=false`
-4. 在复测窗口 (原始时间, 原始时间+1小时) 内查找复测值（排除原始记录）：
+4. 在复测窗口 (原始时间, 原始时间+1小时] 内查找复测值（排除原始记录）：
    - 取窗口内最新的复测值（不论大小）→ 更新 vitalsignNVal2，标记 recheckCompleted=true，重新推送
    - 窗口内无数据 → 标记完成，vitalsignNVal2保持空
    - 未找到且窗口未关闭 → 更新尝试次数，等待下次扫描
@@ -362,6 +362,7 @@ spring.datasource.kingbase.password: 密码
         <vitalsignNVal1>{数值1}</vitalsignNVal1>
         <vitalsignNVal2>{数值2/复测值}</vitalsignNVal2>
         <vitalsignSVal1>{字符串1}</vitalsignSVal1>
+        <vitalsignSVal2>{字符串2}</vitalsignSVal2>
         <measureTime>{planTime}</measureTime>
         <recordTime>{recordTime}</recordTime>
         <nurseId>{recordNurseId}</nurseId>
@@ -1338,3 +1339,42 @@ curl -X POST "http://localhost:10245/manual/heightWeight?mrn=0126091954&targetDa
 2. 传入满足周期的日期（如第 42 天）→ 回传 planTime=当天 07:00 并立即推送
 3. 传入不满足的日期（如第 44 天）→ 不回传，返回 pageDayIndex 与原因
 4. 自动任务、其他体征、出入量、推送状态机不受影响
+
+---
+
+### 2026-11-17：体温复测窗口改为右闭 (原, 原+1小时]
+
+**问题描述**：
+体温复测窗口右边界不含 1 小时处：14:00 体温 39.1℃，15:00 整复测 38.6℃ 未命中，复测值未回传。
+
+**根因分析**：
+`TemperatureRecheckTask` 查询用 `time.gt(originalTime).lt(recheckWindowEnd)`，右边界严格小于，
+正好落在 `原始时间+1小时` 整点的复测记录被排除。注释写"左开右闭"但代码实际是左开右开。
+
+**修改文件**：
+1. `TemperatureRecheckTask.java`：`.lt(recheckWindowEnd)` 改为 `.lte(recheckWindowEnd)`，同步注释
+
+**影响范围**：
+- 体温复测窗口变为 `(标准时间点, 标准时间点+1小时]`，正好 1 小时处的复测值可命中
+- 仅影响体温复测取数，其他体征、出入量、推送状态机不受影响
+
+---
+
+### 2026-11-17：呼吸机标识改回传到 vitalsignSVal2
+
+**需求**：
+呼吸机标识（"使用呼吸机"/"停止呼吸机"）从 `vitalsignSVal1` 改为回传到 `vitalsignSVal2`，
+`vitalsignSVal1` 输出空串。
+
+**修改文件**：
+1. `BreathHandler.java`：4 个标记分支（启用/停止/中间变化后启用/停止）的标识值改写到
+   vitalsignSVal2，vitalsignSVal1 置空串；2 个普通呼吸分支补 vitalsignSVal2 空串（保证节点存在）
+2. `VentilatorEventDetectTask.java`：事件推送同步改字段（当前该任务被
+   `vitalsign.ventilator-detect-enabled=false` 关闭，保持口径一致）
+3. `VitalSignPayload.java`：字段注释同步
+4. `CLAUDE.md`：SOAP 报文结构补 `<vitalsignSVal2>` 节点
+
+**影响范围**：
+- 呼吸体征（1004）呼吸机标识记录：vitalsignSVal1=""，vitalsignSVal2="使用呼吸机"/"停止呼吸机"
+- 内容 hash 含 SVal1/SVal2，已回传的旧记录字段不同会触发两步推送（先 isValid=0 作废旧值再推新值），HIS 侧自动更新
+- 体温测量部位（SVal1）、身高体重、出入量等其他字段用法不变

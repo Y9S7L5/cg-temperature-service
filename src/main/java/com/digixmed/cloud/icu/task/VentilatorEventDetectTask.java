@@ -278,10 +278,12 @@ public class VentilatorEventDetectTask {
                 .recordTime(event.eventTime);
 
         if ("USING".equals(event.type)) {
-            builder.vitalsignSVal1("使用呼吸机")
+            builder.vitalsignSVal1("")
+                    .vitalsignSVal2("使用呼吸机")
                     .vitalsignNVal1("");
         } else {
-            builder.vitalsignSVal1("停止呼吸机")
+            builder.vitalsignSVal1("")
+                    .vitalsignSVal2("停止呼吸机")
                     .vitalsignNVal1("");
         }
 

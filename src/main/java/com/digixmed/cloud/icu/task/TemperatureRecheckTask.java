@@ -22,7 +22,7 @@ import java.util.List;
  *
  * 业务规则：
  *   1. 仅针对标准采集节点（2/6/10/14/18/22 整点）的高热记录（vitalsignNVal1 >= 39.0）做复测，
- *      在 1 小时内查找复测数据（bedside.time 属于 (原时间, 原时间+1小时)，排除原始记录）；
+ *      在 1 小时内查找复测数据（bedside.time 属于 (原时间, 原时间+1小时]，排除原始记录）；
  *   2. 每 10 分钟巡检一次，最多 6 次（共 1 小时）；
  *   3. 取窗口内最新的复测值（不论大小）：更新 vitalsignNVal2，标记重新发送；
  *   4. 6 次均未命中或超出 1 小时窗口：vitalsignNVal2 保持为空，不再发送。
@@ -133,12 +133,12 @@ public class TemperatureRecheckTask {
             return "DONE";
         }
 
-        // 查询 (originalTime, originalTime+1小时) 内的 param_T 复测数据（左开右闭，排除原始记录）
+        // 查询 (originalTime, originalTime+1小时] 内的 param_T 复测数据（左开右闭，排除原始记录）
         Date recheckWindowEnd = new Date(originalTime.getTime() + RECHECK_WINDOW_MS);
 
         Query recheckQuery = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_T")
-                .and("time").gt(originalTime).lt(recheckWindowEnd)
+                .and("time").gt(originalTime).lte(recheckWindowEnd)
                 .and("valid").ne(false).ne(0));
 
         List<Document> recheckDocs = mongoTemplate.find(recheckQuery, Document.class, BEDSIDE_COLLECTION);

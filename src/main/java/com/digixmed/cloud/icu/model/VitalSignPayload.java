@@ -65,7 +65,6 @@ public class VitalSignPayload {
     /**
      * 字符串值1
      * 体温：测量部位（腋温、口温等）
-     * 呼吸：呼吸机状态（使用呼吸机、停止呼吸机）
      * 出入量：总量值
      */
     private String vitalsignSVal1;
@@ -73,6 +72,7 @@ public class VitalSignPayload {
     /**
      * 字符串值2
      * 大便次数：次数值（从 vitalsignSVal1 迁移至此）
+     * 呼吸：呼吸机状态（使用呼吸机、停止呼吸机，从 vitalsignSVal1 迁移至此）
      */
     private String vitalsignSVal2;
 
